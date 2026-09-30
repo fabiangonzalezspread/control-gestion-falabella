@@ -122,12 +122,19 @@ def clave_de_ruta(row):
 # ============================================================
 def calcular_rutas_pendientes(df_fal, df_indice):
     """Arma una fila por Ruta+Fecha que tenga al menos un pedido en Estado
-    'Pendiente', con el conteo de pedidos pendientes y el estado de plazo
-    (Pendiente / Vencido / Subido) segun si ya se subio manifiesto."""
+    'No entregado', desde el dia de ayer en adelante (no se listan no-entregas
+    viejas), con el conteo de pedidos y el estado de plazo (Pendiente / Vencido /
+    Subido) segun si ya se subio manifiesto."""
     if df_fal is None or df_fal.empty:
         return pd.DataFrame()
 
-    pendientes = df_fal[df_fal["Estado"].astype(str).str.strip().str.lower() == "pendiente"].copy()
+    pendientes = df_fal[df_fal["Estado"].astype(str).str.strip().str.lower() == "no entregado"].copy()
+    if pendientes.empty:
+        return pd.DataFrame()
+
+    pendientes["_fecha_dt"] = pd.to_datetime(pendientes["Fecha_carga"], dayfirst=True, errors="coerce")
+    ayer = (hoy_chile().date() - timedelta(days=1))
+    pendientes = pendientes[pendientes["_fecha_dt"].dt.date >= ayer]
     if pendientes.empty:
         return pd.DataFrame()
 
