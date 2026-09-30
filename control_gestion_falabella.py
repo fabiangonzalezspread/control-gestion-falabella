@@ -139,12 +139,25 @@ def calcular_rutas_pendientes(df_fal, df_indice):
         return pd.DataFrame()
 
     pendientes["Fecha_carga"] = pendientes["Fecha_carga"].astype(str)
+    pendientes["_clave_ruta"] = pendientes["Ruta"].astype(str) + "__" + pendientes["Fecha_carga"].astype(str)
+    pendientes["_motivo"] = pendientes["Motivonoentrega"].astype(str).str.strip()
+    pendientes.loc[pendientes["_motivo"].isin(["", "nan", "None"]), "_motivo"] = "Sin motivo registrado"
+
     agrupado = pendientes.groupby(["Ruta", "Fecha_carga", "CT"], dropna=False).agg(
         Patente=("Patente", "first"),
         Conductor=("Conductor", "first"),
         Pedidos_pendientes=("Suborden", "nunique"),
     ).reset_index()
     agrupado["clave_ruta"] = agrupado["Ruta"].astype(str) + "__" + agrupado["Fecha_carga"].astype(str)
+
+    conteo_motivos = (
+        pendientes.groupby(["_clave_ruta", "_motivo"])["Suborden"].nunique().reset_index()
+    )
+    resumen_motivos = {}
+    for clave, grupo in conteo_motivos.groupby("_clave_ruta"):
+        partes = [f"{int(r['Suborden'])} {r['_motivo'].lower()}" for _, r in grupo.sort_values("Suborden", ascending=False).iterrows()]
+        resumen_motivos[clave] = ", ".join(partes)
+    agrupado["Motivos"] = agrupado["clave_ruta"].map(resumen_motivos).fillna("")
 
     subidas = set(df_indice["clave_ruta"]) if not df_indice.empty else set()
     hoy = hoy_chile().date()
@@ -203,10 +216,11 @@ def render_vista_pendientes(df_fal, df_indice):
     for _, r in rutas.iterrows():
         col_info, col_estado, col_accion = st.columns([4, 1.2, 1.6])
         with col_info:
+            detalle_motivos = f" ({r['Motivos']})" if r.get("Motivos") else ""
             st.markdown(
                 f"**Ruta {r['Ruta']}** &nbsp;·&nbsp; PPU {r['Patente']} &nbsp;·&nbsp; "
                 f"{r['Fecha_carga']} &nbsp;·&nbsp; {r['CT']} &nbsp;·&nbsp; {r['Conductor']} "
-                f"&nbsp;·&nbsp; *{r['Pedidos_pendientes']} pedido(s) pendiente(s)*"
+                f"&nbsp;·&nbsp; *{r['Pedidos_pendientes']} no entrega(s){detalle_motivos}*"
             )
         with col_estado:
             if r["Estado_manifiesto"] == "Subido":
