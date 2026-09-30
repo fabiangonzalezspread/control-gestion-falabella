@@ -204,12 +204,50 @@ def render_vista_pendientes(df_fal, df_indice):
 
     total = len(rutas)
     subidos = (rutas["Estado_manifiesto"] == "Subido").sum()
+    por_subir = total - subidos
     vencidos = (rutas["Estado_manifiesto"] == "Vencido").sum()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Rutas pendientes", total)
+    c1.metric("Rutas totales", total)
     c2.metric("Con manifiesto", subidos)
-    c3.metric("Vencidas sin manifiesto", vencidos)
+    c3.metric("Por subir", por_subir)
+
+    st.markdown(
+        "<p style='font-size:13px;font-weight:700;color:#3C3C3B;margin:18px 0 10px;"
+        "text-transform:uppercase;letter-spacing:0.3px;'>Resumen por CT</p>",
+        unsafe_allow_html=True,
+    )
+    resumen_ct = rutas.groupby("CT").agg(
+        Con_manifiesto=("Estado_manifiesto", lambda s: (s == "Subido").sum()),
+        Total=("Estado_manifiesto", "size"),
+    ).reset_index()
+    resumen_ct["Por_subir"] = resumen_ct["Total"] - resumen_ct["Con_manifiesto"]
+    resumen_ct = resumen_ct.sort_values("Por_subir", ascending=False)
+
+    cols_ct = st.columns(3)
+    for i, (_, ct) in enumerate(resumen_ct.iterrows()):
+        pct = int(round(100 * ct["Con_manifiesto"] / ct["Total"])) if ct["Total"] else 0
+        with cols_ct[i % 3]:
+            st.markdown(
+                f"""
+                <div style="background:#fff;border-radius:10px;padding:14px 16px;
+                    box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #e8e8e8;margin-bottom:12px;">
+                    <p style="font-size:13px;font-weight:700;color:#3C3C3B;margin:0 0 10px;">{ct['CT']}</p>
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+                        <span style="font-size:11.5px;color:#8a8a88;">Con manifiesto</span>
+                        <span style="font-size:18px;font-weight:700;color:#009972;">{int(ct['Con_manifiesto'])}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+                        <span style="font-size:11.5px;color:#8a8a88;">Por subir</span>
+                        <span style="font-size:18px;font-weight:700;color:#E03C31;">{int(ct['Por_subir'])}</span>
+                    </div>
+                    <div style="height:6px;border-radius:3px;background:#fdecea;overflow:hidden;">
+                        <div style="height:100%;width:{pct}%;background:#009972;"></div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     st.divider()
 
