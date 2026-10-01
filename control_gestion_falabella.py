@@ -253,8 +253,16 @@ def calcular_folios_en_ruta(df_fal):
     if df_fal is None or df_fal.empty:
         return pd.DataFrame()
 
+    ayer = (hoy_chile().date() - timedelta(days=1))
+
     df_ultimo = df_fal.copy()
     df_ultimo["_fecha_dt_orden"] = pd.to_datetime(df_ultimo["Fecha_carga"], dayfirst=True, errors="coerce")
+    # Igual que en "Pendientes por subir": solo miramos datos desde ayer en
+    # adelante, no todo el historico -- asi no arrastramos filas viejisimas
+    # con Estado 'En ruta' de hace semanas que ya no son relevantes.
+    df_ultimo = df_ultimo[df_ultimo["_fecha_dt_orden"].dt.date >= ayer]
+    if df_ultimo.empty:
+        return pd.DataFrame()
     df_ultimo = df_ultimo.sort_values("_fecha_dt_orden").drop_duplicates(subset="Suborden", keep="last")
 
     en_ruta = df_ultimo[df_ultimo["Estado"].astype(str).str.strip().str.lower() == "en ruta"].copy()
@@ -262,7 +270,6 @@ def calcular_folios_en_ruta(df_fal):
         return pd.DataFrame()
 
     en_ruta["_fecha_dt"] = pd.to_datetime(en_ruta["Fecha_carga"], dayfirst=True, errors="coerce")
-    ayer = (hoy_chile().date() - timedelta(days=1))
     en_ruta = en_ruta[en_ruta["_fecha_dt"].dt.date <= ayer]
     if en_ruta.empty:
         return pd.DataFrame()
