@@ -242,11 +242,22 @@ def calcular_rutas_pendientes(df_fal, df_indice):
 def calcular_folios_en_ruta(df_fal):
     """Arma una fila por folio (Suborden) que siga en Estado 'En ruta' desde
     el dia de ayer hacia atras (no incluye los de hoy, que recien van en
-    camino), con los dias que lleva abierto."""
+    camino), con los dias que lleva abierto.
+
+    Cada sincronizacion con Geosort agrega una fila nueva por Fecha_carga --
+    si un pedido estaba 'En ruta' un dia y al dia siguiente ya aparece
+    'Entregado' o 'No entregado', el consolidado queda con AMBAS filas (la
+    vieja 'En ruta' nunca se borra). Por eso aca nos quedamos solo con la
+    fila mas reciente de cada Suborden antes de filtrar: lo que importa es
+    su estado actual, no cada fecha en la que paso por el sistema."""
     if df_fal is None or df_fal.empty:
         return pd.DataFrame()
 
-    en_ruta = df_fal[df_fal["Estado"].astype(str).str.strip().str.lower() == "en ruta"].copy()
+    df_ultimo = df_fal.copy()
+    df_ultimo["_fecha_dt_orden"] = pd.to_datetime(df_ultimo["Fecha_carga"], dayfirst=True, errors="coerce")
+    df_ultimo = df_ultimo.sort_values("_fecha_dt_orden").drop_duplicates(subset="Suborden", keep="last")
+
+    en_ruta = df_ultimo[df_ultimo["Estado"].astype(str).str.strip().str.lower() == "en ruta"].copy()
     if en_ruta.empty:
         return pd.DataFrame()
 
