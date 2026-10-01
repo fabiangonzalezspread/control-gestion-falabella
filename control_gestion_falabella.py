@@ -112,6 +112,28 @@ def guardar_indice_manifiestos(df):
     github_put_file("indice_manifiestos.parquet", buf.getvalue(), "Actualiza indice de manifiestos", prefix=DATA_PREFIX, sha=sha)
     st.cache_data.clear()
 
+@st.cache_data(ttl=60)
+def cargar_comentarios():
+    contenido, _ = github_get_file("comentarios_rutas.parquet", prefix=DATA_PREFIX)
+    if contenido is None:
+        return pd.DataFrame(columns=["clave_ruta", "comentario", "actualizado_por", "fecha_actualizacion"])
+    return pd.read_parquet(io.BytesIO(contenido))
+
+def guardar_comentario(df_comentarios, clave_ruta, comentario):
+    _, sha = github_get_file("comentarios_rutas.parquet", prefix=DATA_PREFIX)
+    df_sin = df_comentarios[df_comentarios["clave_ruta"] != clave_ruta]
+    nueva_fila = pd.DataFrame([{
+        "clave_ruta": clave_ruta,
+        "comentario": comentario,
+        "actualizado_por": st.session_state.get("usuario_autorizado", ""),
+        "fecha_actualizacion": hoy_chile().strftime("%Y-%m-%d %H:%M"),
+    }])
+    df_final = pd.concat([df_sin, nueva_fila], ignore_index=True)
+    buf = io.BytesIO()
+    df_final.to_parquet(buf, index=False)
+    github_put_file("comentarios_rutas.parquet", buf.getvalue(), "Actualiza comentario de ruta", prefix=DATA_PREFIX, sha=sha)
+    st.cache_data.clear()
+
 def clave_de_ruta(row):
     """Une Ruta + fecha para identificar la ruta física del día -- una misma
     Ruta puede repetirse en fechas distintas."""
@@ -175,7 +197,7 @@ def calcular_rutas_pendientes(df_fal, df_indice):
         return "Vencido" if dias_transcurridos > 1 else "Pendiente"
 
     agrupado["Estado_manifiesto"] = agrupado.apply(estado_fila, axis=1)
-    return agrupado.sort_values(["Estado_manifiesto", "Fecha_carga"], ascending=[False, True])
+    return agrupado.sort_values(["CT", "Estado_manifiesto", "Fecha_carga"], ascending=[True, False, True])
 
 def buscar_suborden_en_falabella(df_fal, texto):
     """Para el buscador de la vista Subidos: si el texto ingresado calza con
@@ -188,18 +210,86 @@ def buscar_suborden_en_falabella(df_fal, texto):
     f = fila.iloc[0]
     return f"{f['Ruta']}__{f['Fecha_carga']}"
 
+def construir_excel_consolidado(rutas, df_indice, df_comentarios):
+    """Arma el Excel exportable con la misma info que muestra el panel (ya
+    filtrada), mas el link del manifiesto subido y el comentario de cada ruta."""
+    df = rutas.copy()
+    indice_por_clave = df_indice.set_index("clave_ruta") if not df_indice.empty else pd.DataFrame()
+    comentarios_por_clave = df_comentarios.set_index("clave_ruta") if not df_comentarios.empty else pd.DataFrame()
+
+    def manifiesto_de(clave):
+        if clave in indice_por_clave.index:
+            fila = indice_por_clave.loc[clave]
+            if isinstance(fila, pd.DataFrame):
+                fila = fila.iloc[-1]
+            return fila.get("ruta_github", "")
+        return ""
+
+    def comentario_de(clave):
+        if clave in comentarios_por_clave.index:
+            fila = comentarios_por_clave.loc[clave]
+            if isinstance(fila, pd.DataFrame):
+                fila = fila.iloc[-1]
+            return fila.get("comentario", "")
+        return ""
+
+    df["Manifiesto"] = df["clave_ruta"].apply(manifiesto_de)
+    df["Comentario"] = df["clave_ruta"].apply(comentario_de)
+
+    columnas = [
+        "CT", "Fecha_carga", "Ruta", "Patente", "Conductor",
+        "Pedidos_pendientes", "Motivos", "Estado_manifiesto", "Manifiesto", "Comentario",
+    ]
+    df_export = df[columnas].rename(columns={
+        "Fecha_carga": "Fecha", "Pedidos_pendientes": "No_entregas", "Estado_manifiesto": "Estado",
+    })
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df_export.to_excel(writer, index=False, sheet_name="Consolidado")
+    return buf.getvalue()
+
 # ============================================================
 # UI
 # ============================================================
 def badge(texto, color_fondo, color_texto):
     return f'<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;background:{color_fondo};color:{color_texto};padding:4px 9px;border-radius:6px;font-weight:700;">{texto}</span>'
 
-def render_vista_pendientes(df_fal, df_indice):
+def render_vista_pendientes(df_fal, df_indice, df_comentarios):
     st.markdown("#### Rutas con devolución pendiente")
 
-    rutas = calcular_rutas_pendientes(df_fal, df_indice)
-    if rutas.empty:
+    rutas_todas = calcular_rutas_pendientes(df_fal, df_indice)
+    if rutas_todas.empty:
         st.info("No hay rutas con pedidos en estado Pendiente en el consolidado actual.")
+        return
+
+    fechas_disponibles = sorted(rutas_todas["Fecha_carga"].unique())
+    cts_disponibles = sorted(rutas_todas["CT"].unique())
+
+    col_f1, col_f2, col_f3 = st.columns([1.3, 1.3, 1.4])
+    with col_f1:
+        fecha_sel = st.selectbox("Filtrar por fecha", ["Todas las fechas"] + fechas_disponibles)
+    with col_f2:
+        ct_sel = st.selectbox("Filtrar por CT", ["Todos los CT"] + cts_disponibles)
+
+    rutas = rutas_todas.copy()
+    if fecha_sel != "Todas las fechas":
+        rutas = rutas[rutas["Fecha_carga"] == fecha_sel]
+    if ct_sel != "Todos los CT":
+        rutas = rutas[rutas["CT"] == ct_sel]
+
+    with col_f3:
+        st.markdown("<div style='height:27px;'></div>", unsafe_allow_html=True)
+        st.download_button(
+            "⬇ Exportar consolidado",
+            data=construir_excel_consolidado(rutas, df_indice, df_comentarios) if not rutas.empty else b"",
+            file_name=f"consolidado_falabella_{hoy_chile().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            disabled=rutas.empty,
+        )
+
+    if rutas.empty:
+        st.warning("No hay rutas que calcen con ese filtro.")
         return
 
     total = len(rutas)
@@ -251,14 +341,30 @@ def render_vista_pendientes(df_fal, df_indice):
 
     st.divider()
 
+    comentarios_por_clave = (
+        df_comentarios.set_index("clave_ruta")["comentario"].to_dict() if not df_comentarios.empty else {}
+    )
+
+    ct_actual = None
     for _, r in rutas.iterrows():
-        col_info, col_estado, col_accion = st.columns([4, 1.2, 1.6])
+        if r["CT"] != ct_actual:
+            ct_actual = r["CT"]
+            st.markdown(
+                f"<p style='font-size:12px;font-weight:700;color:#3C3C3B;background:#f0f0f0;"
+                f"padding:6px 10px;border-radius:6px;margin:14px 0 8px;text-transform:uppercase;"
+                f"letter-spacing:0.3px;'>{ct_actual}</p>",
+                unsafe_allow_html=True,
+            )
+
+        col_info, col_estado, col_accion, col_comentario = st.columns([3.2, 1, 1.5, 2])
         with col_info:
             detalle_motivos = f" ({r['Motivos']})" if r.get("Motivos") else ""
             st.markdown(
-                f"**Ruta {r['Ruta']}** &nbsp;·&nbsp; PPU {r['Patente']} &nbsp;·&nbsp; "
-                f"{r['Fecha_carga']} &nbsp;·&nbsp; {r['CT']} &nbsp;·&nbsp; {r['Conductor']} "
-                f"&nbsp;·&nbsp; *{r['Pedidos_pendientes']} no entrega(s){detalle_motivos}*"
+                f"<p style='font-size:10.5px;color:#1a1a1a;margin:0;'><strong>Ruta {r['Ruta']}</strong> "
+                f"&nbsp;·&nbsp; PPU {r['Patente']} &nbsp;·&nbsp; {r['Fecha_carga']}</p>"
+                f"<p style='font-size:10px;color:#8a8a88;font-style:italic;margin:2px 0 0;'>"
+                f"{r['Conductor']} &nbsp;·&nbsp; {r['Pedidos_pendientes']} no entrega(s){detalle_motivos}</p>",
+                unsafe_allow_html=True,
             )
         with col_estado:
             if r["Estado_manifiesto"] == "Subido":
@@ -293,6 +399,16 @@ def render_vista_pendientes(df_fal, df_indice):
                     st.rerun()
             else:
                 st.caption("Ya tiene manifiesto")
+        with col_comentario:
+            valor_actual = comentarios_por_clave.get(r["clave_ruta"], "")
+            nuevo_comentario = st.text_input(
+                "Comentario", value=valor_actual, key=f"comentario_{r['clave_ruta']}",
+                label_visibility="collapsed", placeholder="Agregar comentario...",
+            )
+            if st.button("Guardar", key=f"guardar_comentario_{r['clave_ruta']}"):
+                guardar_comentario(df_comentarios, r["clave_ruta"], nuevo_comentario)
+                st.success("Comentario guardado.")
+                st.rerun()
         st.markdown("<hr style='margin:4px 0;border-color:#f0f0f0;'>", unsafe_allow_html=True)
 
 def render_vista_subidos(df_fal, df_indice):
@@ -361,12 +477,13 @@ def main():
         st.error("No se pudo leer el consolidado de Falabella desde GitHub. Revisa GITHUB_REPO / GITHUB_TOKEN.")
         return
     df_indice = cargar_indice_manifiestos()
+    df_comentarios = cargar_comentarios()
 
     vista = st.radio("Vista", ["Pendientes por subir", "Manifiestos subidos"], horizontal=True, label_visibility="collapsed")
     st.markdown("<br>", unsafe_allow_html=True)
 
     if vista == "Pendientes por subir":
-        render_vista_pendientes(df_fal, df_indice)
+        render_vista_pendientes(df_fal, df_indice, df_comentarios)
     else:
         render_vista_subidos(df_fal, df_indice)
 
