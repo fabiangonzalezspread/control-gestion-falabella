@@ -49,8 +49,9 @@ def puede_entrar():
 GITHUB_TOKEN  = st.secrets.get("GITHUB_TOKEN", "")
 GITHUB_REPO   = st.secrets.get("GITHUB_REPO", "")     # "usuario/repositorio" -- el MISMO repo del panel principal
 GITHUB_BRANCH = st.secrets.get("GITHUB_BRANCH", "main")
-DATA_PREFIX        = "data/"
-MANIFIESTOS_PREFIX = "data/manifiestos_devolucion/"
+DATA_PREFIX         = "data/"
+MANIFIESTOS_PREFIX  = "data/manifiestos_devolucion/"
+FORMULARIOS_PREFIX  = "data/formularios_ruta/"
 
 HEADERS = {
     "Authorization": f"token {GITHUB_TOKEN}",
@@ -134,6 +135,45 @@ def guardar_comentario(df_comentarios, clave_ruta, comentario):
     github_put_file("comentarios_rutas.parquet", buf.getvalue(), "Actualiza comentario de ruta", prefix=DATA_PREFIX, sha=sha)
     st.cache_data.clear()
 
+@st.cache_data(ttl=60)
+def cargar_indice_formularios():
+    contenido, _ = github_get_file("indice_formularios_ruta.parquet", prefix=DATA_PREFIX)
+    if contenido is None:
+        return pd.DataFrame(columns=[
+            "clave_folio", "Suborden", "Ruta", "Fecha_carga", "CT", "Conductor",
+            "nombre_archivo", "ruta_github", "fecha_subida", "subido_por",
+        ])
+    return pd.read_parquet(io.BytesIO(contenido))
+
+def guardar_indice_formularios(df):
+    _, sha = github_get_file("indice_formularios_ruta.parquet", prefix=DATA_PREFIX)
+    buf = io.BytesIO()
+    df.to_parquet(buf, index=False)
+    github_put_file("indice_formularios_ruta.parquet", buf.getvalue(), "Actualiza indice de formularios de ruta", prefix=DATA_PREFIX, sha=sha)
+    st.cache_data.clear()
+
+@st.cache_data(ttl=60)
+def cargar_comentarios_folios():
+    contenido, _ = github_get_file("comentarios_folios.parquet", prefix=DATA_PREFIX)
+    if contenido is None:
+        return pd.DataFrame(columns=["clave_folio", "comentario", "actualizado_por", "fecha_actualizacion"])
+    return pd.read_parquet(io.BytesIO(contenido))
+
+def guardar_comentario_folio(df_comentarios, clave_folio, comentario):
+    _, sha = github_get_file("comentarios_folios.parquet", prefix=DATA_PREFIX)
+    df_sin = df_comentarios[df_comentarios["clave_folio"] != clave_folio]
+    nueva_fila = pd.DataFrame([{
+        "clave_folio": clave_folio,
+        "comentario": comentario,
+        "actualizado_por": st.session_state.get("usuario_autorizado", ""),
+        "fecha_actualizacion": hoy_chile().strftime("%Y-%m-%d %H:%M"),
+    }])
+    df_final = pd.concat([df_sin, nueva_fila], ignore_index=True)
+    buf = io.BytesIO()
+    df_final.to_parquet(buf, index=False)
+    github_put_file("comentarios_folios.parquet", buf.getvalue(), "Actualiza comentario de folio en ruta", prefix=DATA_PREFIX, sha=sha)
+    st.cache_data.clear()
+
 def clave_de_ruta(row):
     """Une Ruta + fecha para identificar la ruta física del día -- una misma
     Ruta puede repetirse en fechas distintas."""
@@ -198,6 +238,36 @@ def calcular_rutas_pendientes(df_fal, df_indice):
 
     agrupado["Estado_manifiesto"] = agrupado.apply(estado_fila, axis=1)
     return agrupado.sort_values(["CT", "Estado_manifiesto", "Fecha_carga"], ascending=[True, False, True])
+
+def calcular_folios_en_ruta(df_fal):
+    """Arma una fila por folio (Suborden) que siga en Estado 'En ruta' desde
+    el dia de ayer hacia atras (no incluye los de hoy, que recien van en
+    camino), con los dias que lleva abierto."""
+    if df_fal is None or df_fal.empty:
+        return pd.DataFrame()
+
+    en_ruta = df_fal[df_fal["Estado"].astype(str).str.strip().str.lower() == "en ruta"].copy()
+    if en_ruta.empty:
+        return pd.DataFrame()
+
+    en_ruta["_fecha_dt"] = pd.to_datetime(en_ruta["Fecha_carga"], dayfirst=True, errors="coerce")
+    ayer = (hoy_chile().date() - timedelta(days=1))
+    en_ruta = en_ruta[en_ruta["_fecha_dt"].dt.date <= ayer]
+    if en_ruta.empty:
+        return pd.DataFrame()
+
+    en_ruta["Fecha_carga"] = en_ruta["Fecha_carga"].astype(str)
+    hoy = hoy_chile().date()
+    en_ruta["Dias_abierto"] = en_ruta["_fecha_dt"].dt.date.apply(lambda d: (hoy - d).days)
+
+    agrupado = en_ruta.groupby(["Suborden", "Ruta", "Fecha_carga", "CT"], dropna=False).agg(
+        Conductor=("Conductor", "first"),
+        Dias_abierto=("Dias_abierto", "max"),
+    ).reset_index()
+    agrupado["clave_folio"] = agrupado["Suborden"].astype(str)
+    agrupado["clave_ruta"] = agrupado["Ruta"].astype(str) + "__" + agrupado["Fecha_carga"].astype(str)
+
+    return agrupado.sort_values(["CT", "Dias_abierto"], ascending=[True, False])
 
 def buscar_suborden_en_falabella(df_fal, texto):
     """Para el buscador de la vista Subidos: si el texto ingresado calza con
@@ -411,6 +481,109 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
                 st.rerun()
         st.markdown("<hr style='margin:4px 0;border-color:#f0f0f0;'>", unsafe_allow_html=True)
 
+def render_vista_en_ruta(df_fal, df_formularios, df_comentarios_folios):
+    st.markdown("#### Pedidos en ruta por planchar")
+
+    folios_todos = calcular_folios_en_ruta(df_fal)
+    if folios_todos.empty:
+        st.info("No hay folios en estado En ruta pendientes de planchar.")
+        return
+
+    fechas_disponibles = sorted(folios_todos["Fecha_carga"].unique())
+    cts_disponibles = sorted(folios_todos["CT"].unique())
+
+    col_f1, col_f2 = st.columns([1.3, 1.3])
+    with col_f1:
+        fecha_sel = st.selectbox("Filtrar por fecha", ["Todas las fechas"] + fechas_disponibles, key="er_fecha")
+    with col_f2:
+        ct_sel = st.selectbox("Filtrar por CT", ["Todos los CT"] + cts_disponibles, key="er_ct")
+
+    folios = folios_todos.copy()
+    if fecha_sel != "Todas las fechas":
+        folios = folios[folios["Fecha_carga"] == fecha_sel]
+    if ct_sel != "Todos los CT":
+        folios = folios[folios["CT"] == ct_sel]
+
+    if folios.empty:
+        st.warning("No hay folios que calcen con ese filtro.")
+        return
+
+    total_folios = len(folios)
+    rutas_afectadas = folios["clave_ruta"].nunique()
+    con_2_mas_dias = (folios["Dias_abierto"] >= 2).sum()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Folios abiertos", total_folios)
+    c2.metric("Rutas afectadas", rutas_afectadas)
+    c3.metric("Con 2+ días abiertos", int(con_2_mas_dias))
+
+    st.divider()
+
+    formularios_subidos = set(df_formularios["clave_folio"]) if not df_formularios.empty else set()
+    comentarios_por_clave = (
+        df_comentarios_folios.set_index("clave_folio")["comentario"].to_dict()
+        if not df_comentarios_folios.empty else {}
+    )
+
+    ct_actual = None
+    for _, r in folios.iterrows():
+        if r["CT"] != ct_actual:
+            ct_actual = r["CT"]
+            st.markdown(
+                f"<p style='font-size:12px;font-weight:700;color:#3C3C3B;background:#f0f0f0;"
+                f"padding:6px 10px;border-radius:6px;margin:14px 0 8px;text-transform:uppercase;"
+                f"letter-spacing:0.3px;'>{ct_actual}</p>",
+                unsafe_allow_html=True,
+            )
+
+        col_info, col_formulario, col_comentario = st.columns([2.8, 1.8, 2.2])
+        with col_info:
+            dias_color = "#E03C31" if r["Dias_abierto"] >= 2 else "#8a6d00"
+            st.markdown(
+                f"<p style='font-size:10.5px;color:#1a1a1a;margin:0;'>SOC <strong>{r['Suborden']}</strong> "
+                f"&nbsp;·&nbsp; Ruta {r['Ruta']} &nbsp;·&nbsp; {r['Fecha_carga']}</p>"
+                f"<p style='font-size:10px;color:#8a8a88;font-style:italic;margin:2px 0 0;'>"
+                f"{r['Conductor']} &nbsp;·&nbsp; <span style='color:{dias_color};font-weight:700;'>"
+                f"{int(r['Dias_abierto'])} día(s) abierto</span></p>",
+                unsafe_allow_html=True,
+            )
+        with col_formulario:
+            if r["clave_folio"] in formularios_subidos:
+                st.markdown(badge("Subido", "#dff5ec", "#009972"), unsafe_allow_html=True)
+            else:
+                archivo = st.file_uploader(
+                    "Subir evidencia", key=f"formulario_{r['clave_folio']}", label_visibility="collapsed",
+                )
+                if archivo is not None:
+                    nombre_archivo = f"{r['clave_folio']}_{archivo.name}".replace("/", "-")
+                    github_put_file(
+                        nombre_archivo, archivo.getvalue(),
+                        f"Formulario/evidencia folio {r['Suborden']} (ruta {r['Ruta']})",
+                        prefix=FORMULARIOS_PREFIX,
+                    )
+                    nueva_fila = pd.DataFrame([{
+                        "clave_folio": r["clave_folio"], "Suborden": r["Suborden"], "Ruta": r["Ruta"],
+                        "Fecha_carga": r["Fecha_carga"], "CT": r["CT"], "Conductor": r["Conductor"],
+                        "nombre_archivo": nombre_archivo,
+                        "ruta_github": f"{FORMULARIOS_PREFIX}{nombre_archivo}",
+                        "fecha_subida": hoy_chile().strftime("%Y-%m-%d %H:%M"),
+                        "subido_por": st.session_state.get("usuario_autorizado", ""),
+                    }])
+                    guardar_indice_formularios(pd.concat([df_formularios, nueva_fila], ignore_index=True))
+                    st.success("Formulario/evidencia subido.")
+                    st.rerun()
+        with col_comentario:
+            valor_actual = comentarios_por_clave.get(r["clave_folio"], "")
+            nuevo_comentario = st.text_input(
+                "Comentario", value=valor_actual, key=f"comentario_folio_{r['clave_folio']}",
+                label_visibility="collapsed", placeholder="Agregar comentario...",
+            )
+            if st.button("Guardar", key=f"guardar_comentario_folio_{r['clave_folio']}"):
+                guardar_comentario_folio(df_comentarios_folios, r["clave_folio"], nuevo_comentario)
+                st.success("Comentario guardado.")
+                st.rerun()
+        st.markdown("<hr style='margin:4px 0;border-color:#f0f0f0;'>", unsafe_allow_html=True)
+
 def render_vista_subidos(df_fal, df_indice):
     st.markdown("#### Manifiestos subidos")
 
@@ -478,14 +651,22 @@ def main():
         return
     df_indice = cargar_indice_manifiestos()
     df_comentarios = cargar_comentarios()
+    df_formularios = cargar_indice_formularios()
+    df_comentarios_folios = cargar_comentarios_folios()
 
-    vista = st.radio("Vista", ["Pendientes por subir", "Manifiestos subidos"], horizontal=True, label_visibility="collapsed")
+    vista = st.radio(
+        "Vista",
+        ["Pendientes por subir", "Manifiestos subidos", "Pedidos en ruta por planchar"],
+        horizontal=True, label_visibility="collapsed",
+    )
     st.markdown("<br>", unsafe_allow_html=True)
 
     if vista == "Pendientes por subir":
         render_vista_pendientes(df_fal, df_indice, df_comentarios)
-    else:
+    elif vista == "Manifiestos subidos":
         render_vista_subidos(df_fal, df_indice)
+    else:
+        render_vista_en_ruta(df_fal, df_formularios, df_comentarios_folios)
 
 if __name__ == "__main__":
     main()
