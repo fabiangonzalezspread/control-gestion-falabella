@@ -356,6 +356,32 @@ def construir_excel_consolidado(rutas, df_indice, df_comentarios):
 def badge(texto, color_fondo, color_texto):
     return f'<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;background:{color_fondo};color:{color_texto};padding:4px 9px;border-radius:6px;font-weight:700;">{texto}</span>'
 
+def texto_copiable_ruta(r):
+    """Arma el texto plano de una ruta (encabezado + conductor + motivos con
+    sus SOC) listo para pegar en WhatsApp u otro chat."""
+    lineas = [f"Ruta {r['Ruta']} · PPU {r['Patente']} · {r['Fecha_carga']}"]
+    if r.get("Conductor"):
+        lineas.append(f"Conductor: {r['Conductor']}")
+    for motivo, socs in (r.get("Detalle_motivos") or []):
+        lineas.append(f"{len(socs)} {motivo.lower()}: {', '.join(socs)}")
+    return "\n".join(lineas)
+
+def boton_copiar(texto, key, etiqueta="Copiar"):
+    """Botón HTML chico que copia 'texto' al portapapeles al hacer click.
+    Usa onclick directo (no <script>) para que funcione dentro de st.markdown."""
+    import json as _json
+    # json.dumps produce comillas dobles -- el atributo onclick va entre
+    # comillas simples para que no choquen, y escapamos cualquier comilla
+    # simple que venga dentro del texto (p.ej. en un nombre con apóstrofe).
+    texto_js = _json.dumps(texto).replace("'", "&#39;")
+    return (
+        f"<button onclick='navigator.clipboard.writeText({texto_js})' "
+        f'id="{key}" '
+        f'style="font-size:10.5px;padding:2px 9px;border:1px solid #d8d8d6;'
+        f'border-radius:6px;background:#fff;color:#3C3C3B;cursor:pointer;">'
+        f'{etiqueta}</button>'
+    )
+
 def render_vista_pendientes(df_fal, df_indice, df_comentarios):
     st.markdown("#### Rutas con devolución pendiente")
 
@@ -449,25 +475,39 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
         df_comentarios.set_index("clave_ruta")["comentario"].to_dict() if not df_comentarios.empty else {}
     )
 
+    texto_por_ct = {
+        ct: "\n\n".join(texto_copiable_ruta(r) for _, r in grupo.iterrows())
+        for ct, grupo in rutas.groupby("CT")
+    }
+
     ct_actual = None
     for _, r in rutas.iterrows():
         if r["CT"] != ct_actual:
             ct_actual = r["CT"]
+            boton_ct = boton_copiar(
+                f"{ct_actual}\n\n{texto_por_ct.get(ct_actual, '')}",
+                key=f"copiar_ct_{ct_actual}", etiqueta="Copiar CT",
+            )
             st.markdown(
-                f"<p style='font-size:12px;font-weight:700;color:#3C3C3B;background:#f0f0f0;"
-                f"padding:6px 10px;border-radius:6px;margin:14px 0 8px;text-transform:uppercase;"
-                f"letter-spacing:0.3px;'>{ct_actual}</p>",
+                f"<div style='display:flex;align-items:center;justify-content:space-between;"
+                f"background:#f0f0f0;padding:6px 10px;border-radius:6px;margin:14px 0 8px;'>"
+                f"<p style='font-size:12px;font-weight:700;color:#3C3C3B;margin:0;"
+                f"text-transform:uppercase;letter-spacing:0.3px;'>{ct_actual}</p>"
+                f"{boton_ct}</div>",
                 unsafe_allow_html=True,
             )
 
         col_info, col_estado, col_accion, col_comentario = st.columns([3.2, 1, 1.5, 2])
         with col_info:
             detalle_motivos = f" ({r['Motivos']})" if r.get("Motivos") else ""
+            boton_ruta = boton_copiar(texto_copiable_ruta(r), key=f"copiar_ruta_{r['clave_ruta']}")
             st.markdown(
-                f"<p style='font-size:10.5px;color:#1a1a1a;margin:0;'><strong>Ruta {r['Ruta']}</strong> "
+                f"<div style='display:flex;align-items:flex-start;justify-content:space-between;gap:8px;'>"
+                f"<div><p style='font-size:10.5px;color:#1a1a1a;margin:0;'><strong>Ruta {r['Ruta']}</strong> "
                 f"&nbsp;·&nbsp; PPU {r['Patente']} &nbsp;·&nbsp; {r['Fecha_carga']}</p>"
                 f"<p style='font-size:10px;color:#8a8a88;font-style:italic;margin:2px 0 0;'>"
-                f"{r['Conductor']} &nbsp;·&nbsp; {r['Pedidos_pendientes']} no entrega(s){detalle_motivos}</p>",
+                f"{r['Conductor']} &nbsp;·&nbsp; {r['Pedidos_pendientes']} no entrega(s){detalle_motivos}</p></div>"
+                f"{boton_ruta}</div>",
                 unsafe_allow_html=True,
             )
             for motivo, socs in (r.get("Detalle_motivos") or []):
