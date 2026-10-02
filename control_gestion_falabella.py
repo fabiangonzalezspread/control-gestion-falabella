@@ -1,9 +1,11 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import requests
 import base64
 import io
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -366,21 +368,50 @@ def texto_copiable_ruta(r):
         lineas.append(f"{len(socs)} {motivo.lower()}: {', '.join(socs)}")
     return "\n".join(lineas)
 
-def boton_copiar(texto, key, etiqueta="Copiar"):
-    """Botón HTML chico que copia 'texto' al portapapeles al hacer click.
-    Usa onclick directo (no <script>) para que funcione dentro de st.markdown."""
+def boton_copiar(texto, key, etiqueta="Copiar", alto=34):
+    """Botón chico que copia 'texto' al portapapeles al hacer click.
+    st.markdown(unsafe_allow_html=True) filtra los atributos onclick por
+    seguridad, así que esto se renderiza con components.html, que sí ejecuta
+    el HTML/JS de verdad (iframe dedicado, sin sanitizar)."""
     import json as _json
-    # json.dumps produce comillas dobles -- el atributo onclick va entre
-    # comillas simples para que no choquen, y escapamos cualquier comilla
-    # simple que venga dentro del texto (p.ej. en un nombre con apóstrofe).
-    texto_js = _json.dumps(texto).replace("'", "&#39;")
-    return (
-        f"<button onclick='navigator.clipboard.writeText({texto_js})' "
-        f'id="{key}" '
-        f'style="font-size:10.5px;padding:2px 9px;border:1px solid #d8d8d6;'
-        f'border-radius:6px;background:#fff;color:#3C3C3B;cursor:pointer;">'
-        f'{etiqueta}</button>'
-    )
+    texto_js = _json.dumps(texto)
+    html = f"""
+    <div style="font-family:sans-serif;">
+    <button id="{key}" style="font-size:11px;padding:3px 10px;border:1px solid #d8d8d6;
+        border-radius:6px;background:#fff;color:#3C3C3B;cursor:pointer;">{etiqueta}</button>
+    <script>
+    document.getElementById("{key}").addEventListener("click", function() {{
+        const texto = {texto_js};
+        const btn = this;
+        const original = btn.textContent;
+        function marcarCopiado() {{
+            btn.textContent = "Copiado";
+            setTimeout(function() {{ btn.textContent = original; }}, 1200);
+        }}
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(texto).then(marcarCopiado).catch(function() {{
+                const ta = document.createElement("textarea");
+                ta.value = texto;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand("copy");
+                document.body.removeChild(ta);
+                marcarCopiado();
+            }});
+        }} else {{
+            const ta = document.createElement("textarea");
+            ta.value = texto;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+            marcarCopiado();
+        }}
+    }});
+    </script>
+    </div>
+    """
+    components.html(html, height=alto)
 
 def render_vista_pendientes(df_fal, df_indice, df_comentarios):
     st.markdown("#### Rutas con devolución pendiente")
@@ -484,30 +515,30 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
     for _, r in rutas.iterrows():
         if r["CT"] != ct_actual:
             ct_actual = r["CT"]
-            boton_ct = boton_copiar(
-                f"{ct_actual}\n\n{texto_por_ct.get(ct_actual, '')}",
-                key=f"copiar_ct_{ct_actual}", etiqueta="Copiar CT",
-            )
-            st.markdown(
-                f"<div style='display:flex;align-items:center;justify-content:space-between;"
-                f"background:#f0f0f0;padding:6px 10px;border-radius:6px;margin:14px 0 8px;'>"
-                f"<p style='font-size:12px;font-weight:700;color:#3C3C3B;margin:0;"
-                f"text-transform:uppercase;letter-spacing:0.3px;'>{ct_actual}</p>"
-                f"{boton_ct}</div>",
-                unsafe_allow_html=True,
-            )
+            clave_ct = re.sub(r"[^a-zA-Z0-9]", "_", ct_actual)
+            col_titulo_ct, col_boton_ct = st.columns([5, 1])
+            with col_titulo_ct:
+                st.markdown(
+                    f"<p style='font-size:12px;font-weight:700;color:#3C3C3B;background:#f0f0f0;"
+                    f"padding:6px 10px;border-radius:6px;margin:14px 0 0;"
+                    f"text-transform:uppercase;letter-spacing:0.3px;'>{ct_actual}</p>",
+                    unsafe_allow_html=True,
+                )
+            with col_boton_ct:
+                st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+                boton_copiar(
+                    f"{ct_actual}\n\n{texto_por_ct.get(ct_actual, '')}",
+                    key=f"copiar_ct_{clave_ct}", etiqueta="Copiar CT",
+                )
 
-        col_info, col_estado, col_accion, col_comentario = st.columns([3.2, 1, 1.5, 2])
+        col_info, col_copiar, col_estado, col_accion, col_comentario = st.columns([2.8, 0.6, 0.9, 1.5, 2])
         with col_info:
             detalle_motivos = f" ({r['Motivos']})" if r.get("Motivos") else ""
-            boton_ruta = boton_copiar(texto_copiable_ruta(r), key=f"copiar_ruta_{r['clave_ruta']}")
             st.markdown(
-                f"<div style='display:flex;align-items:flex-start;justify-content:space-between;gap:8px;'>"
-                f"<div><p style='font-size:10.5px;color:#1a1a1a;margin:0;'><strong>Ruta {r['Ruta']}</strong> "
+                f"<p style='font-size:10.5px;color:#1a1a1a;margin:0;'><strong>Ruta {r['Ruta']}</strong> "
                 f"&nbsp;·&nbsp; PPU {r['Patente']} &nbsp;·&nbsp; {r['Fecha_carga']}</p>"
                 f"<p style='font-size:10px;color:#8a8a88;font-style:italic;margin:2px 0 0;'>"
-                f"{r['Conductor']} &nbsp;·&nbsp; {r['Pedidos_pendientes']} no entrega(s){detalle_motivos}</p></div>"
-                f"{boton_ruta}</div>",
+                f"{r['Conductor']} &nbsp;·&nbsp; {r['Pedidos_pendientes']} no entrega(s){detalle_motivos}</p>",
                 unsafe_allow_html=True,
             )
             for motivo, socs in (r.get("Detalle_motivos") or []):
@@ -522,6 +553,8 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
                     f"<div style='margin:2px 0 0;'>{chips}</div>",
                     unsafe_allow_html=True,
                 )
+        with col_copiar:
+            boton_copiar(texto_copiable_ruta(r), key=f"copiar_ruta_{re.sub(r'[^a-zA-Z0-9]', '_', str(r['clave_ruta']))}")
         with col_estado:
             if r["Estado_manifiesto"] == "Subido":
                 st.markdown(badge("Subido", "#dff5ec", "#009972"), unsafe_allow_html=True)
