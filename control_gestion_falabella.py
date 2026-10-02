@@ -356,7 +356,10 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
 
     col_f1, col_f2, col_f3 = st.columns([1.3, 1.3, 1.4])
     with col_f1:
-        fecha_sel = st.selectbox("Filtrar por fecha", ["Todas las fechas"] + fechas_disponibles)
+        opciones_fecha = ["Todas las fechas"] + fechas_disponibles
+        ayer_str = (hoy_chile().date() - timedelta(days=1)).strftime("%d/%m/%Y")
+        indice_default = opciones_fecha.index(ayer_str) if ayer_str in opciones_fecha else 0
+        fecha_sel = st.selectbox("Filtrar por fecha", opciones_fecha, index=indice_default)
     with col_f2:
         ct_sel = st.selectbox("Filtrar por CT", ["Todos los CT"] + cts_disponibles)
 
@@ -512,7 +515,10 @@ def render_vista_en_ruta(df_fal, df_formularios, df_comentarios_folios):
 
     col_f1, col_f2 = st.columns([1.3, 1.3])
     with col_f1:
-        fecha_sel = st.selectbox("Filtrar por fecha", ["Todas las fechas"] + fechas_disponibles, key="er_fecha")
+        opciones_fecha = ["Todas las fechas"] + fechas_disponibles
+        ayer_str = (hoy_chile().date() - timedelta(days=1)).strftime("%d/%m/%Y")
+        indice_default = opciones_fecha.index(ayer_str) if ayer_str in opciones_fecha else 0
+        fecha_sel = st.selectbox("Filtrar por fecha", opciones_fecha, index=indice_default, key="er_fecha")
     with col_f2:
         ct_sel = st.selectbox("Filtrar por CT", ["Todos los CT"] + cts_disponibles, key="er_ct")
 
