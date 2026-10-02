@@ -467,7 +467,8 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
         with col_accion:
             if r["Estado_manifiesto"] != "Subido":
                 archivo = st.file_uploader(
-                    "Subir manifiesto", type=["pdf", "jpg", "jpeg", "png"],
+                    "Subir manifiesto",
+                    type=["pdf", "jpg", "jpeg", "png", "xlsx", "xls", "csv", "docx", "doc", "msg", "eml"],
                     key=f"upload_{r['clave_ruta']}", label_visibility="collapsed",
                 )
                 if archivo is not None:
