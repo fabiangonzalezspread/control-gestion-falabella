@@ -359,9 +359,14 @@ def badge(texto, color_fondo, color_texto):
     return f'<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;background:{color_fondo};color:{color_texto};padding:4px 9px;border-radius:6px;font-weight:700;">{texto}</span>'
 
 def texto_copiable_ruta(r):
-    """Arma el texto plano de una ruta (encabezado + conductor + motivos con
-    sus SOC) listo para pegar en WhatsApp u otro chat."""
-    lineas = [f"Ruta {r['Ruta']} · PPU {r['Patente']} · {r['Fecha_carga']}"]
+    """Arma el texto plano de una ruta (CT + encabezado + conductor + motivos
+    con sus SOC) listo para pegar en WhatsApp u otro chat."""
+    lineas = []
+    if r.get("CT"):
+        ct_txt = str(r["CT"]).strip()
+        ct_txt = ct_txt if ct_txt.upper().startswith("CT") else f"CT {ct_txt}"
+        lineas.append(ct_txt)
+    lineas.append(f"Ruta {r['Ruta']} · PPU {r['Patente']} · {r['Fecha_carga']}")
     if r.get("Conductor"):
         lineas.append(f"Conductor: {r['Conductor']}")
     for motivo, socs in (r.get("Detalle_motivos") or []):
