@@ -221,6 +221,19 @@ def calcular_rutas_pendientes(df_fal, df_indice):
         resumen_motivos[clave] = ", ".join(partes)
     agrupado["Motivos"] = agrupado["clave_ruta"].map(resumen_motivos).fillna("")
 
+    # SOC (Suborden) de cada pedido no entregado, agrupadas por motivo -- para
+    # mostrarlas como chips debajo de cada motivo en el detalle de la ruta.
+    socs_por_motivo = {}
+    for clave, grupo in pendientes.groupby("_clave_ruta"):
+        por_motivo = []
+        orden_motivos = grupo.groupby("_motivo")["Suborden"].nunique().sort_values(ascending=False)
+        for motivo in orden_motivos.index:
+            socs = sorted(grupo.loc[grupo["_motivo"] == motivo, "Suborden"].astype(str).unique().tolist())
+            por_motivo.append((motivo, socs))
+        socs_por_motivo[clave] = por_motivo
+    agrupado["Detalle_motivos"] = agrupado["clave_ruta"].map(socs_por_motivo)
+    agrupado["Detalle_motivos"] = agrupado["Detalle_motivos"].apply(lambda v: v if isinstance(v, list) else [])
+
     subidas = set(df_indice["clave_ruta"]) if not df_indice.empty else set()
     hoy = hoy_chile().date()
 
@@ -457,6 +470,18 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
                 f"{r['Conductor']} &nbsp;·&nbsp; {r['Pedidos_pendientes']} no entrega(s){detalle_motivos}</p>",
                 unsafe_allow_html=True,
             )
+            for motivo, socs in (r.get("Detalle_motivos") or []):
+                chips = "".join(
+                    f"<span style='background:#f5f5f4;border:1px solid #e8e8e8;border-radius:5px;"
+                    f"padding:1px 7px;margin:2px 4px 0 0;font-size:9.5px;font-family:monospace;"
+                    f"color:#3C3C3B;display:inline-block;'>{soc}</span>"
+                    for soc in socs
+                )
+                st.markdown(
+                    f"<p style='font-size:9.5px;color:#8a8a88;margin:5px 0 0;'>{motivo.lower()}</p>"
+                    f"<div style='margin:2px 0 0;'>{chips}</div>",
+                    unsafe_allow_html=True,
+                )
         with col_estado:
             if r["Estado_manifiesto"] == "Subido":
                 st.markdown(badge("Subido", "#dff5ec", "#009972"), unsafe_allow_html=True)
