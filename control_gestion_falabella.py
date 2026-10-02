@@ -569,28 +569,32 @@ def render_vista_pendientes(df_fal, df_indice, df_comentarios):
                 st.markdown(badge("Pendiente", "#fff6da", "#8a6d00"), unsafe_allow_html=True)
         with col_accion:
             if r["Estado_manifiesto"] != "Subido":
-                archivo = st.file_uploader(
+                archivos = st.file_uploader(
                     "Subir manifiesto",
-                    type=["pdf", "jpg", "jpeg", "png", "xlsx", "xls", "csv", "docx", "doc", "msg", "eml"],
+                    type=["pdf", "jpg", "jpeg", "png", "xlsx", "xls", "csv", "docx", "doc",
+                          "msg", "eml", "zip", "rar", "7z"],
+                    accept_multiple_files=True,
                     key=f"upload_{r['clave_ruta']}", label_visibility="collapsed",
                 )
-                if archivo is not None:
-                    nombre_archivo = f"{r['clave_ruta']}_{archivo.name}".replace("/", "-")
-                    github_put_file(
-                        nombre_archivo, archivo.getvalue(),
-                        f"Manifiesto ruta {r['Ruta']} ({r['Fecha_carga']})",
-                        prefix=MANIFIESTOS_PREFIX,
-                    )
-                    nueva_fila = pd.DataFrame([{
-                        "clave_ruta": r["clave_ruta"], "Ruta": r["Ruta"], "Fecha_carga": r["Fecha_carga"],
-                        "CT": r["CT"], "Patente": r["Patente"], "Conductor": r["Conductor"],
-                        "nombre_archivo": nombre_archivo,
-                        "ruta_github": f"{MANIFIESTOS_PREFIX}{nombre_archivo}",
-                        "fecha_subida": hoy_chile().strftime("%Y-%m-%d %H:%M"),
-                        "subido_por": st.session_state.get("usuario_autorizado", ""),
-                    }])
-                    guardar_indice_manifiestos(pd.concat([df_indice, nueva_fila], ignore_index=True))
-                    st.success("Manifiesto subido.")
+                if archivos:
+                    filas_nuevas = []
+                    for archivo in archivos:
+                        nombre_archivo = f"{r['clave_ruta']}_{archivo.name}".replace("/", "-")
+                        github_put_file(
+                            nombre_archivo, archivo.getvalue(),
+                            f"Manifiesto ruta {r['Ruta']} ({r['Fecha_carga']})",
+                            prefix=MANIFIESTOS_PREFIX,
+                        )
+                        filas_nuevas.append({
+                            "clave_ruta": r["clave_ruta"], "Ruta": r["Ruta"], "Fecha_carga": r["Fecha_carga"],
+                            "CT": r["CT"], "Patente": r["Patente"], "Conductor": r["Conductor"],
+                            "nombre_archivo": nombre_archivo,
+                            "ruta_github": f"{MANIFIESTOS_PREFIX}{nombre_archivo}",
+                            "fecha_subida": hoy_chile().strftime("%Y-%m-%d %H:%M"),
+                            "subido_por": st.session_state.get("usuario_autorizado", ""),
+                        })
+                    guardar_indice_manifiestos(pd.concat([df_indice, pd.DataFrame(filas_nuevas)], ignore_index=True))
+                    st.success(f"{len(archivos)} archivo(s) subido(s).")
                     st.rerun()
             else:
                 st.caption("Ya tiene manifiesto")
@@ -679,26 +683,29 @@ def render_vista_en_ruta(df_fal, df_formularios, df_comentarios_folios):
             if r["clave_folio"] in formularios_subidos:
                 st.markdown(badge("Subido", "#dff5ec", "#009972"), unsafe_allow_html=True)
             else:
-                archivo = st.file_uploader(
-                    "Subir evidencia", key=f"formulario_{r['clave_folio']}", label_visibility="collapsed",
+                archivos = st.file_uploader(
+                    "Subir evidencia", accept_multiple_files=True,
+                    key=f"formulario_{r['clave_folio']}", label_visibility="collapsed",
                 )
-                if archivo is not None:
-                    nombre_archivo = f"{r['clave_folio']}_{archivo.name}".replace("/", "-")
-                    github_put_file(
-                        nombre_archivo, archivo.getvalue(),
-                        f"Formulario/evidencia folio {r['Suborden']} (ruta {r['Ruta']})",
-                        prefix=FORMULARIOS_PREFIX,
-                    )
-                    nueva_fila = pd.DataFrame([{
-                        "clave_folio": r["clave_folio"], "Suborden": r["Suborden"], "Ruta": r["Ruta"],
-                        "Fecha_carga": r["Fecha_carga"], "CT": r["CT"], "Conductor": r["Conductor"],
-                        "nombre_archivo": nombre_archivo,
-                        "ruta_github": f"{FORMULARIOS_PREFIX}{nombre_archivo}",
-                        "fecha_subida": hoy_chile().strftime("%Y-%m-%d %H:%M"),
-                        "subido_por": st.session_state.get("usuario_autorizado", ""),
-                    }])
-                    guardar_indice_formularios(pd.concat([df_formularios, nueva_fila], ignore_index=True))
-                    st.success("Formulario/evidencia subido.")
+                if archivos:
+                    filas_nuevas = []
+                    for archivo in archivos:
+                        nombre_archivo = f"{r['clave_folio']}_{archivo.name}".replace("/", "-")
+                        github_put_file(
+                            nombre_archivo, archivo.getvalue(),
+                            f"Formulario/evidencia folio {r['Suborden']} (ruta {r['Ruta']})",
+                            prefix=FORMULARIOS_PREFIX,
+                        )
+                        filas_nuevas.append({
+                            "clave_folio": r["clave_folio"], "Suborden": r["Suborden"], "Ruta": r["Ruta"],
+                            "Fecha_carga": r["Fecha_carga"], "CT": r["CT"], "Conductor": r["Conductor"],
+                            "nombre_archivo": nombre_archivo,
+                            "ruta_github": f"{FORMULARIOS_PREFIX}{nombre_archivo}",
+                            "fecha_subida": hoy_chile().strftime("%Y-%m-%d %H:%M"),
+                            "subido_por": st.session_state.get("usuario_autorizado", ""),
+                        })
+                    guardar_indice_formularios(pd.concat([df_formularios, pd.DataFrame(filas_nuevas)], ignore_index=True))
+                    st.success(f"{len(archivos)} archivo(s) subido(s).")
                     st.rerun()
         with col_comentario:
             valor_actual = comentarios_por_clave.get(r["clave_folio"], "")
