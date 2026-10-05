@@ -6,7 +6,7 @@ import requests
 import base64
 import io
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="Control de Gestión Falabella 2026", layout="wide")
@@ -184,6 +184,10 @@ def clave_de_ruta(row):
 # ============================================================
 # LOGICA DE NEGOCIO
 # ============================================================
+# Se consolidan todas las rutas con no-entregas desde esta fecha (el filtro por
+# defecto del panel sigue mostrando el dia de ayer).
+FECHA_INICIO_PENDIENTES = date(2026, 10, 3)
+
 def calcular_rutas_pendientes(df_fal, df_indice):
     """Arma una fila por Ruta+Fecha que tenga al menos un pedido en Estado
     'No entregado', desde el dia de ayer en adelante (no se listan no-entregas
@@ -197,8 +201,7 @@ def calcular_rutas_pendientes(df_fal, df_indice):
         return pd.DataFrame()
 
     pendientes["_fecha_dt"] = pd.to_datetime(pendientes["Fecha_carga"], dayfirst=True, errors="coerce")
-    ayer = (hoy_chile().date() - timedelta(days=1))
-    pendientes = pendientes[pendientes["_fecha_dt"].dt.date >= ayer]
+    pendientes = pendientes[pendientes["_fecha_dt"].dt.date >= FECHA_INICIO_PENDIENTES]
     if pendientes.empty:
         return pd.DataFrame()
 
@@ -743,7 +746,7 @@ def render_vista_subidos(df_fal, df_indice):
         st.warning("No se encontraron manifiestos para esa búsqueda.")
         return
 
-    for _, r in resultado.sort_values("fecha_subida", ascending=False).iterrows():
+    for _n, (_, r) in enumerate(resultado.sort_values("fecha_subida", ascending=False).iterrows()):
         col_info, col_descarga = st.columns([4, 1.2])
         with col_info:
             st.markdown(
@@ -756,7 +759,7 @@ def render_vista_subidos(df_fal, df_indice):
             if contenido:
                 st.download_button(
                     "Descargar", data=contenido, file_name=r["nombre_archivo"],
-                    key=f"dl_{r['clave_ruta']}",
+                    key=f"dl_{_n}_{r['clave_ruta']}_{r['nombre_archivo']}",
                 )
         st.markdown("<hr style='margin:4px 0;border-color:#f0f0f0;'>", unsafe_allow_html=True)
 
