@@ -1029,6 +1029,219 @@ def render_vista_busqueda(df_fal, df_indice, df_comentarios, df_formularios, df_
             st.markdown(f"Comentario del folio: \"{com_folio}\"")
 
 # ============================================================
+# VISTA EXPORTAR -- reporte compilado en formato Geosort (NUEVO)
+# Solo lee el consolidado que ya carga el panel. No escribe nada en GitHub:
+# el archivo se arma al presionar "Generar" y se descarga.
+# ============================================================
+GEOSORT_COLUMNAS = [
+    "Suborden", "Do", "Estado", "Patente", "Empresa", "Idruta", "Posicionruta", "Ct",
+    "Direccion", "Localidad", "Region", "Volumen", "Horainicio", "Horafin",
+    "Fechainicioruta", "Fechapactada", "Fechaentregareal", "Fechaestimada", "Tipoviaje",
+    "Tipogeo", "Tipodocumento", "Paperlessreceptor", "Paperlessrut", "Paperlesscode",
+    "Metodoentrega", "Comentarionoentrega", "Motivonoentrega", "Driveremail", "Drivername",
+    "Driverrut", "Pointlatitude", "Pointlongitude", "Deliverylatitude", "Deliverylongitude",
+    "Distance_totalization", "Simpliroute_id", "Imageurl", "LPN", "LPN_Container",
+    "Commerce", "ParentOrder", "Activa",
+]
+# Columna Geosort <- posibles nombres en el consolidado (si no tiene el mismo nombre)
+GEOSORT_ALIAS = {
+    "Idruta": ["Ruta"],
+    "Ct": ["CT"],
+    "Drivername": ["Conductor"],
+    "Commerce": ["Comercio"],
+    "Localidad": ["Comuna"],
+}
+# Estado homologado del consolidado -> estado original de Geosort
+GEOSORT_ESTADOS = {"entregado": "Terminado", "no entregado": "Pendiente", "en ruta": "En ruta"}
+EXPORT_MAX_DIAS = 31
+EXPORT_DIAS_ZIP = 7      # sobre esta cantidad de dias se descarga comprimido en ZIP
+EXPORT_MAX_FILAS_EXCEL = 60000
+
+def _columna_texto(serie):
+    """Columna como texto limpio, vectorizado (sin 'nan' ni '.0' en numeros enteros)."""
+    if pd.api.types.is_float_dtype(serie):
+        enteros = serie.dropna()
+        if not enteros.empty and (enteros % 1 == 0).all():
+            serie = serie.astype("Int64")
+    s = serie.astype(str)
+    s = s.where(~serie.isna(), "")
+    return s.replace({"nan": "", "None": "", "NaT": "", "<NA>": ""})
+
+def filas_del_rango(df_fal, desde, hasta, ct_sel):
+    """Filas del consolidado con Fecha_carga dentro del rango (y del CT), ordenadas por fecha."""
+    fechas = pd.to_datetime(df_fal["Fecha_carga"], dayfirst=True, errors="coerce").dt.date
+    mask = (fechas >= desde) & (fechas <= hasta)
+    if ct_sel != "Todos los CT":
+        mask = mask & (df_fal["CT"].astype(str) == ct_sel)
+    orden = fechas[mask].sort_values(kind="stable").index
+    return df_fal.loc[orden]
+
+def a_formato_geosort(base, agregar_fecha_carga):
+    """Convierte filas del consolidado a las mismas columnas y el mismo orden
+    que el reporte de planificacion de Geosort. Columnas que el consolidado
+    no guarda quedan vacias."""
+    salida = {}
+    for col in GEOSORT_COLUMNAS:
+        origen = col if col in base.columns else next(
+            (a for a in GEOSORT_ALIAS.get(col, []) if a in base.columns), None
+        )
+        salida[col] = _columna_texto(base[origen]) if origen else pd.Series("", index=base.index)
+    reporte = pd.DataFrame(salida, index=base.index)
+    reporte["Estado"] = reporte["Estado"].map(
+        lambda e: GEOSORT_ESTADOS.get(str(e).strip().lower(), e)
+    )
+    if agregar_fecha_carga:
+        reporte["Fecha_carga"] = _columna_texto(base["Fecha_carga"])
+    return reporte.reset_index(drop=True)
+
+EXPORT_TAMANO_BLOQUE = 20000   # filas por bloque al escribir el archivo (asi no se dispara la memoria)
+
+def escribir_csv_geosort(base, agregar_fecha_carga, destino):
+    """Escribe el CSV (punto y coma, utf-8 con BOM, igual que Geosort) por bloques
+    en 'destino' (archivo binario abierto). Devuelve resumen y vista previa."""
+    columnas_con_dato = set()
+    socs = set()
+    no_ent = 0
+    preview = None
+    for i, inicio in enumerate(range(0, len(base), EXPORT_TAMANO_BLOQUE)):
+        bloque = a_formato_geosort(base.iloc[inicio:inicio + EXPORT_TAMANO_BLOQUE], agregar_fecha_carga)
+        texto = bloque.to_csv(sep=";", index=False, header=(i == 0))
+        destino.write(texto.encode("utf-8-sig" if i == 0 else "utf-8"))
+        columnas_con_dato.update(c for c in GEOSORT_COLUMNAS if (bloque[c] != "").any())
+        socs.update(bloque["Suborden"][bloque["Suborden"] != ""].tolist())
+        no_ent += int((bloque["Estado"].astype(str).str.lower() == "pendiente").sum())
+        if preview is None:
+            preview = bloque.head(20)
+        del bloque, texto
+    vacias = [c for c in GEOSORT_COLUMNAS if c not in columnas_con_dato]
+    return {"socs": len(socs), "no_ent": no_ent, "vacias": vacias}, preview
+
+def _limpiar_export():
+    for k in ("export_bytes", "export_nombre", "export_mime", "export_excel", "export_resumen", "export_preview"):
+        st.session_state.pop(k, None)
+
+def render_vista_exportar(df_fal):
+    import zipfile
+
+    st.markdown("#### Exportar en formato Geosort")
+    st.caption(
+        "Compila en un solo archivo los días del rango, con las mismas columnas y el mismo orden "
+        "que el reporte de planificación de Geosort (CSV separado por punto y coma)."
+    )
+
+    fechas_validas = pd.to_datetime(df_fal["Fecha_carga"], dayfirst=True, errors="coerce").dropna()
+    if fechas_validas.empty:
+        st.info("El consolidado no tiene fechas de carga válidas.")
+        return
+    f_min, f_max = fechas_validas.min().date(), fechas_validas.max().date()
+    ayer = hoy_chile().date() - timedelta(days=1)
+    defecto = min(max(ayer, f_min), f_max)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        desde = st.date_input("Desde", value=defecto, min_value=f_min, max_value=f_max,
+                              format="DD/MM/YYYY", key="exp_desde", on_change=_limpiar_export)
+    with col2:
+        hasta = st.date_input("Hasta", value=defecto, min_value=f_min, max_value=f_max,
+                              format="DD/MM/YYYY", key="exp_hasta", on_change=_limpiar_export)
+    with col3:
+        cts = sorted(df_fal["CT"].dropna().astype(str).unique().tolist())
+        ct_sel = st.selectbox("CT", ["Todos los CT"] + cts, key="exp_ct", on_change=_limpiar_export)
+    agregar_fecha = st.checkbox(
+        "Agregar columna Fecha_carga al final (para distinguir los días del rango)",
+        value=True, key="exp_fecha_carga", on_change=_limpiar_export,
+    )
+    st.caption(f"Datos disponibles del {f_min.strftime('%d/%m/%Y')} al {f_max.strftime('%d/%m/%Y')}.")
+
+    dias = (hasta - desde).days + 1
+    if dias < 1:
+        st.warning("La fecha 'Desde' debe ser anterior o igual a 'Hasta'.")
+        return
+    if dias > EXPORT_MAX_DIAS:
+        st.warning(f"El rango máximo es de {EXPORT_MAX_DIAS} días. Elegiste {dias}; genera un mes por vez.")
+        return
+
+    if st.button("Generar reporte", type="primary", key="exp_generar"):
+        _limpiar_export()
+        with st.spinner("Generando reporte..."):
+            base = filas_del_rango(df_fal, desde, hasta, ct_sel)
+            if base.empty:
+                st.warning("No hay datos para ese rango.")
+                return
+            tramo = f"{desde.strftime('%d-%m-%Y')}_a_{hasta.strftime('%d-%m-%Y')}" if dias > 1 else desde.strftime('%d-%m-%Y')
+            if ct_sel != "Todos los CT":
+                tramo += "_" + re.sub(r"[^A-Za-z0-9]+", "_", ct_sel).strip("_")
+            nombre_csv = f"reporte-planificacion compilado {tramo}.csv"
+            buf = io.BytesIO()
+            if dias > EXPORT_DIAS_ZIP:
+                # Rango largo: se escribe por bloques directo dentro del ZIP (no se arma el CSV entero en memoria)
+                with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+                    with z.open(nombre_csv, "w", force_zip64=True) as destino:
+                        resumen, preview = escribir_csv_geosort(base, agregar_fecha, destino)
+                st.session_state["export_nombre"] = nombre_csv.replace(".csv", ".zip")
+                st.session_state["export_mime"] = "application/zip"
+            else:
+                resumen, preview = escribir_csv_geosort(base, agregar_fecha, buf)
+                st.session_state["export_nombre"] = nombre_csv
+                st.session_state["export_mime"] = "text/csv"
+            st.session_state["export_bytes"] = buf.getvalue()
+            del buf
+            st.session_state["export_resumen"] = {
+                "dias": dias, "filas": len(base), "socs": resumen["socs"], "no_ent": resumen["no_ent"],
+                "vacias": resumen["vacias"],
+                "rango": f"{desde.strftime('%d/%m/%Y')} al {hasta.strftime('%d/%m/%Y')} · {ct_sel}",
+                "excel_ok": dias <= EXPORT_DIAS_ZIP and len(base) <= EXPORT_MAX_FILAS_EXCEL,
+            }
+            st.session_state["export_preview"] = preview
+            del base
+
+    if "export_bytes" in st.session_state:
+        res = st.session_state["export_resumen"]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Días", res["dias"])
+        m2.metric("Filas", f"{res['filas']:,}".replace(",", "."))
+        m3.metric("SOC únicas", f"{res['socs']:,}".replace(",", "."))
+        m4.metric("No entregados", f"{res['no_ent']:,}".replace(",", "."))
+        peso = len(st.session_state["export_bytes"]) / 1_048_576
+        st.success(f"Reporte listo: {res['rango']} · {peso:.1f} MB")
+        if res["vacias"]:
+            st.caption(
+                "Columnas que el consolidado no guarda (van vacías): " + ", ".join(res["vacias"])
+            )
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            etiqueta = "⬇ Descargar ZIP (CSV)" if st.session_state["export_mime"] == "application/zip" else "⬇ Descargar CSV"
+            st.download_button(
+                etiqueta, data=st.session_state["export_bytes"],
+                file_name=st.session_state["export_nombre"], mime=st.session_state["export_mime"],
+                key="exp_dl_csv",
+            )
+        with c2:
+            if "export_excel" in st.session_state:
+                st.download_button(
+                    "⬇ Descargar Excel", data=st.session_state["export_excel"],
+                    file_name=st.session_state["export_nombre"].replace(".csv", ".xlsx"),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="exp_dl_xlsx",
+                )
+            elif res.get("excel_ok"):
+                # El Excel es mas pesado de armar: solo se genera si alguien lo pide
+                if st.button("Preparar Excel", key="exp_prep_xlsx"):
+                    with st.spinner("Armando Excel..."):
+                        base = filas_del_rango(df_fal, desde, hasta, ct_sel)
+                        buf_x = io.BytesIO()
+                        with pd.ExcelWriter(buf_x, engine="openpyxl") as writer:
+                            a_formato_geosort(base, agregar_fecha).to_excel(writer, index=False, sheet_name="Reporte")
+                        st.session_state["export_excel"] = buf_x.getvalue()
+                        del base, buf_x
+                    st.rerun()
+            else:
+                st.caption(f"Excel disponible solo para rangos de hasta {EXPORT_DIAS_ZIP} días.")
+        st.button("Limpiar reporte", key="exp_limpiar", on_click=_limpiar_export)
+        st.caption("Vista previa (primeras 20 filas)")
+        st.dataframe(st.session_state["export_preview"], use_container_width=True, hide_index=True)
+
+# ============================================================
 # MAIN
 # ============================================================
 def main():
@@ -1059,7 +1272,7 @@ def main():
 
     vista = st.radio(
         "Vista",
-        ["Pendientes por subir", "Manifiestos subidos", "Búsqueda", "Pedidos en ruta por planchar"],
+        ["Pendientes por subir", "Manifiestos subidos", "Búsqueda", "Pedidos en ruta por planchar", "Exportar"],
         horizontal=True, label_visibility="collapsed",
     )
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1070,6 +1283,8 @@ def main():
         render_vista_subidos(df_fal, df_indice)
     elif vista == "Búsqueda":
         render_vista_busqueda(df_fal, df_indice, df_comentarios, df_formularios, df_comentarios_folios)
+    elif vista == "Exportar":
+        render_vista_exportar(df_fal)
     else:
         render_vista_en_ruta(df_fal, df_formularios, df_comentarios_folios)
 
